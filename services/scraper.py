@@ -3,6 +3,7 @@ import logging
 import requests
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
+from typing import Dict, Any, Optional, List
 
 from services.http import HEADERS, throttled_get
 from transforms.cleaning import (
@@ -40,7 +41,7 @@ class CventScraper:
 
         venue_links = set()
         page = 1
-        empty_pages = 0
+        empty_pages: int = 0
 
         while page <= max_pages:
             page_url = city_url if page == 1 else f"{city_url}?page={page}"
@@ -83,7 +84,7 @@ class CventScraper:
     # Phase 2 — Venue Detail Scraping
     # ---------------------------------------------------------------------------
 
-    def scrape_venue_details(self, venue_url: str, country: str = None, city: str = None) -> dict:
+    def scrape_venue_details(self, venue_url: str, country: Optional[str] = None, city: Optional[str] = None) -> Dict[str, Any]:
         """
         Scrape detailed venue information from a Cvent venue page
         using DOM-anchored extraction with safe fallbacks.
@@ -124,7 +125,7 @@ class CventScraper:
     # Private helpers
     # ---------------------------------------------------------------------------
 
-    def _scrape_venue_details_section(self, soup: BeautifulSoup, data: dict, venue_url: str):
+    def _scrape_venue_details_section(self, soup: BeautifulSoup, data: Dict[str, Any], venue_url: str):
         """
         Scrapes venue details like name, venue ID, and address.
         """
@@ -169,7 +170,7 @@ class CventScraper:
 
         return data
 
-    def _scrape_guest_room_details(self, soup, data: dict):
+    def _scrape_guest_room_details(self, soup, data: Dict[str, Any]):
         """
         Scrapes guest room details from the Cvent Guest Rooms section.
         Values are returned as cleaned strings (no numeric casting).
@@ -213,7 +214,7 @@ class CventScraper:
             # Store value exactly as shown (string)
             data[key] = value
 
-    def _scrape_meeting_space_details(self, soup, data: dict):
+    def _scrape_meeting_space_details(self, soup, data: Dict[str, Any]):
         """
         Scrapes meeting space summary details from the Meeting Rooms section.
         Values are returned as cleaned strings (no numeric casting).
@@ -256,7 +257,7 @@ class CventScraper:
             # Normalize whitespace only — keep value intact
             data[key] = value
 
-    def _scrape_built_renovated_years(self, page_text: str, data: dict):
+    def _scrape_built_renovated_years(self, page_text: str, data: Dict[str, Any]):
         """
         Scrapes year built and renovated.
         """
@@ -268,7 +269,7 @@ class CventScraper:
         if renovated_match:
             data["year_renovated"] = renovated_match.group(1)
 
-    def _scrape_location_and_parking(self, soup, data: dict):
+    def _scrape_location_and_parking(self, soup, data: Dict[str, Any]):
         """
         Scrapes airport distance strings and parking types.
         Enriches distance-only values with airport names when possible.
@@ -360,7 +361,7 @@ class CventScraper:
         # Deduplicate while preserving order
         data["parking_types"] = list(dict.fromkeys(data["parking_types"]))
 
-    def _scrape_facilities(self, soup: BeautifulSoup, data: dict):
+    def _scrape_facilities(self, soup: BeautifulSoup, data: Dict[str, Any]):
         """
         Scrapes available facilities.
         """
@@ -375,7 +376,7 @@ class CventScraper:
                 data["catering"] = any(re.search(r'catering', f, re.I) for f in facilities_list)
                 data["av"] = any(re.search(r'audiovisual|av', f, re.I) for f in facilities_list)
 
-    def _scrape_industry_ratings(self, soup, data: dict):
+    def _scrape_industry_ratings(self, soup, data: Dict[str, Any]):
         """
         Scrapes industry ratings (Northstar, AAA, Forbes, etc.)
         and populates them as string values like '4 Star' in the data dict.
@@ -427,7 +428,7 @@ class CventScraper:
                 elif rating_name == 'Forbes Travel Guide':
                     data['forbes_rating'] = f"{rating_value}"
 
-    def _scrape_max_guest_capacity(self, soup: BeautifulSoup, data: dict):
+    def _scrape_max_guest_capacity(self, soup: BeautifulSoup, data: Dict[str, Any]):
         """
         Scrapes maximum guest capacity from tables.
         """

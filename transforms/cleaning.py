@@ -37,23 +37,6 @@ def sanitize_data_types(data: Any):
         elif field in data and not isinstance(data[field], (int, float, type(None), Decimal)):
             data[field] = None
 
-    # Specific handling for fields that contain units (e.g., 'sq. ft.') or percentage signs and should be float/decimal
-    fields_with_units_to_decimal: list[str] = []
-    for field in fields_with_units_to_decimal:
-        if field in data and isinstance(data[field], str) and data[field] is not None:
-            try:
-                # Remove units like 'sq. ft.', 'sqm', 'm^2', '%' and commas
-                # Then extract numeric part
-                cleaned_value = re.sub(r'[a-zA-Z%\s,]', '', data[field])
-                if cleaned_value:
-                    data[field] = Decimal(cleaned_value)
-                else:
-                    data[field] = None
-            except InvalidOperation:
-                data[field] = None
-        elif field in data and not isinstance(data[field], (int, float, type(None), Decimal)):
-            data[field] = None
-
 
 def format_airport_distances(distance_texts):
     """
