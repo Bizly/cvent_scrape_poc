@@ -1,8 +1,9 @@
 import re
 from decimal import Decimal, InvalidOperation
+from typing import Dict, Any
 
 
-def sanitize_data_types(data: dict):
+def sanitize_data_types(data: Any):
     """
     Sanitizes and converts data types for specified fields in the venue data dictionary.
     """
@@ -10,13 +11,13 @@ def sanitize_data_types(data: dict):
     fields_to_int = [
         "total_guest_rooms",
         "single_1_bed_rooms",
-        "double_2_bed_rooms",
+        "double_2_beds_rooms",
         "suite_rooms",
         "year_built",
         "year_renovated",
         "meeting_room_count",
         "max_capacity",
-        "aaa_ratings",
+        "aaa_rating",
         "travelstar_rating",
         "forbes_rating"
     ]
@@ -37,7 +38,7 @@ def sanitize_data_types(data: dict):
             data[field] = None
 
     # Specific handling for fields that contain units (e.g., 'sq. ft.') or percentage signs and should be float/decimal
-    fields_with_units_to_decimal = []
+    fields_with_units_to_decimal: list[str] = []
     for field in fields_with_units_to_decimal:
         if field in data and isinstance(data[field], str) and data[field] is not None:
             try:
@@ -93,7 +94,7 @@ def format_airport_distances(distance_texts):
     return formatted
 
 
-def rename_property_fields(payload: dict) -> dict:
+def rename_property_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Mutates the input payload by renaming specific fields.
     Returns the same payload reference for convenience.
@@ -103,7 +104,7 @@ def rename_property_fields(payload: dict) -> dict:
         "single_1_beds": "single_1_bed_rooms",
         "double_2_beds": "double_2_beds_rooms",
         "suites": "suite_rooms",
-        "meeting_rooms": "meeting_rooms_count",
+        "meeting_rooms": "meeting_room_count",
         "largest_room": "largest_meeting_room",
         "second_largest_room": "second_largest_meeting_room",
     }
@@ -115,16 +116,15 @@ def rename_property_fields(payload: dict) -> dict:
     return payload
 
 
-def validate_schema(payload: dict, schema_cls) -> dict:
+def validate_schema(payload: Dict[str, Any], schema_cls: Any) -> Dict[str, Any]:
     """
-    Mutates the payload by removing fields not present in the schema.
+    Validates the payload against the schema, enforcing required fields.
+    Mutates the payload to match the validated data and strips extra fields.
     Returns the same payload reference.
     """
+    validated_data = schema_cls.model_validate(payload).model_dump()
 
-    allowed_fields = set(schema_cls.model_fields.keys())
-
-    for key in list(payload.keys()):
-        if key not in allowed_fields:
-            payload.pop(key)
+    payload.clear()
+    payload.update(validated_data)
 
     return payload

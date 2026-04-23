@@ -423,7 +423,7 @@ class CventScraper:
                 if rating_name == 'Northstar':
                     data['travelstar_rating'] = f"{rating_value}"
                 elif rating_name == 'AAA':
-                    data['aaa_ratings'] = f"{rating_value}"
+                    data['aaa_rating'] = f"{rating_value}"
                 elif rating_name == 'Forbes Travel Guide':
                     data['forbes_rating'] = f"{rating_value}"
 
