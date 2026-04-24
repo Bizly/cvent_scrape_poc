@@ -49,8 +49,8 @@ def insert_venue_batch(venues: list[dict]) -> bool:
         logger.info(f"Batch of {len(venues)} venues inserted successfully (HTTP {resp.status_code}).")
         return True
     except requests.HTTPError as e:
-        logger.error(f"HTTP error inserting batch: {e} — response: {e.response.text if e.response else 'n/a'}")
+        logger.exception(f"HTTP error inserting batch: {e} — response: {e.response.text if e.response else 'n/a'}")
     except requests.RequestException as e:
-        logger.error(f"Request error inserting batch: {e}")
+        logger.exception(f"Request error inserting batch: {e}")
 
     return False

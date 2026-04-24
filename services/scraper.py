@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List
 from services.http import HEADERS, throttled_get
 from transforms.cleaning import (
     rename_property_fields,
+    ensure_required_venue_schema_fields,
     sanitize_data_types,
     validate_schema,
     format_airport_distances,
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 class CventScraper:
 
+    def __init__(self) -> None:
+        # One session per scraper instance: connection pooling / keep-alive for
+        # all listing and detail requests to Cvent.
+        self._session = requests.Session()
+        self._session.headers.update(HEADERS)
+
     # ---------------------------------------------------------------------------
     # Phase 1 — Link Discovery
     # ---------------------------------------------------------------------------
@@ -37,8 +44,6 @@ class CventScraper:
 
         logger.info(f"Scraping venue links from {city_url}")
 
-        session = requests.Session()
-
         venue_links = set()
         page = 1
         empty_pages: int = 0
@@ -47,7 +52,7 @@ class CventScraper:
             page_url = city_url if page == 1 else f"{city_url}?page={page}"
             logger.info(f"  → Page {page}: {page_url}")
 
-            resp = throttled_get(session, page_url)
+            resp = throttled_get(self._session, page_url)
             soup = BeautifulSoup(resp.text, "lxml")
 
             page_links = set()
@@ -90,9 +95,7 @@ class CventScraper:
         using DOM-anchored extraction with safe fallbacks.
         """
 
-        session = requests.Session()
-        session.headers.update(HEADERS)
-        resp = throttled_get(session, venue_url)
+        resp = throttled_get(self._session, venue_url)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "lxml")
@@ -116,6 +119,7 @@ class CventScraper:
 
         # -----------------Step 2 - Data Cleaning and Formatting --------------------#
         rename_property_fields(data)
+        ensure_required_venue_schema_fields(data)
         sanitize_data_types(data)
         validate_schema(data, VenueDetailsSchema)
 

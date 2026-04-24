@@ -29,5 +29,8 @@ BIZLY_API_URL = os.getenv("BIZLY_API_URL", "https://api-dev.bizly.com/hooks/venu
 BIZLY_WEBHOOK_KEY = os.getenv("BIZLY_WEBHOOK_KEY", "")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
 
+# --- Redis ---
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
 # --- Future: Database (leave as None for now) ---
 DATABASE_URL = os.getenv("DATABASE_URL", None)

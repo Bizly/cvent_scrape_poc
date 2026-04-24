@@ -1,90 +1,152 @@
 import logging
-import threading
+from uuid import uuid4
 
 import pandas as pd
 
 from services.scraper import CventScraper
-from storage.bizly_api.insert_batch_venues import insert_venue_batch
+from services.logging_setup import configure_logging, log_context
+from services.queues import (
+    enqueue_url,
+    pop_url,
+    push_dlq_destination,
+    push_dlq_url,
+    cache_push_result,
+    cache_flush_if_ready,
+    cache_final_drain,
+    queue_len,
+    dlq_counts,
+)
 from config import DEBUG_MODE, DEBUG_LIMIT, INPUT_CSV, BATCH_SIZE
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
-def run():
-    scraper = CventScraper()
+def _short_trace() -> str:
+    return uuid4().hex[:8]
 
-    # --- Phase 1: Link Discovery ---
-    logger.info("Phase 1: Discovering venue links...")
+
+def run_phase1(scraper: CventScraper) -> int:
+    """
+    Phase 1 — Link Discovery.
+    For each destination, scrape venue URLs and RPUSH them onto the Redis
+    work queue. Deduplicates across destinations using an in-memory set so
+    the same link is not enqueued twice in a single run.
+    On destination-level failure (after throttled_get's HTTP retries
+    exhaust), push the destination to the DLQ and continue.
+    """
     df = pd.read_csv(INPUT_CSV)
-    destinations = df[['country', 'city_name']].drop_duplicates()
+    destinations = df[["country", "city_name"]].drop_duplicates()
 
-    raw_links = []
+    logger.info("PHASE1_START destinations=%d", len(destinations))
+
+    seen: set[str] = set()
+    enqueued = 0
+
     for _, row in destinations.iterrows():
-        country, city = row['country'], row['city_name']
-        logger.info(f"Collecting links for {city}, {country}")
-        try:
-            links = scraper.scrape_venue_links(country, city)
-            for url in links:
-                raw_links.append({"link": url, "country": country, "city": city})
-        except Exception as e:
-            logger.error(f"Link discovery failed for {city}, {country}: {e}")
+        country, city = row["country"], row["city_name"]
+        trace_id = _short_trace()
+        dest_label = f"{city},{country}"
 
-    # Deduplicate
-    seen = set()
-    all_links = []
-    for item in raw_links:
-        if item["link"] not in seen:
-            all_links.append(item)
-            seen.add(item["link"])
+        with log_context(trace_id=trace_id, dest=dest_label):
+            logger.info("DEST_START")
+            try:
+                links = scraper.scrape_venue_links(country, city)
+            except Exception as e:
+                logger.exception("DEST_FAIL_DLQ error=%s", e)
+                push_dlq_destination(country, city, trace_id, str(e))
+                continue
 
-    logger.info(f"Phase 1 complete. {len(all_links)} unique venue URLs discovered.")
+            new_count = 0
+            for link in links:
+                if link in seen:
+                    continue
+                seen.add(link)
+                enqueue_url(link, country, city, trace_id)
+                enqueued += 1
+                new_count += 1
 
-    # --- Phase 2: Venue Scraping ---
-    logger.info("Phase 2: Scraping venue details...")
+                if DEBUG_MODE and enqueued >= DEBUG_LIMIT:
+                    break
 
-    # TODO: Replace this loop with a queue (RQ or Celery) when scaling.
-    # Each item in all_links becomes a job pushed to Redis.
-    # Workers call extract_venue_details() independently.
-    # 1 venue = 1 job. Max 2-3 concurrent workers to respect Cvent rate limits.
-    links_to_process = all_links[:DEBUG_LIMIT] if DEBUG_MODE else all_links
-    logger.info(f"Processing {len(links_to_process)} venues (DEBUG_MODE={DEBUG_MODE})")
+            logger.info("DEST_SUCCESS urls=%d new=%d", len(links), new_count)
 
-    results = []
-    threads = []
+        if DEBUG_MODE and enqueued >= DEBUG_LIMIT:
+            logger.info("PHASE1_DEBUG_CAP reached=%d limit=%d", enqueued, DEBUG_LIMIT)
+            break
 
-    def _dispatch(batch: list[dict]):
-        """Fire insert_venue_batch in a background thread so scraping is not blocked."""
-        t = threading.Thread(target=insert_venue_batch, args=(batch,), daemon=True)
-        t.start()
-        threads.append(t)
-        logger.info(f"Batch of {len(batch)} venues dispatched to background thread.")
+    counts = dlq_counts()
+    logger.info(
+        "PHASE1_END enqueued=%d queue_len=%d dlq_destinations=%d",
+        enqueued,
+        queue_len(),
+        counts["dlq_destinations"],
+    )
+    return enqueued
 
-    for i, item in enumerate(links_to_process):
-        logger.info(f"[{i+1}/{len(links_to_process)}] Scraping: {item['link']}")
-        try:
-            details = scraper.scrape_venue_details(item["link"], item["country"], item["city"])
-            results.append(details)
-        except Exception as e:
-            logger.error(f"Failed to scrape {item['link']}: {e}")
 
-        if len(results) >= BATCH_SIZE:
-            _dispatch(results.copy())
-            results = []
+def run_phase2(scraper: CventScraper) -> int:
+    """
+    Phase 2 — Drain the URL queue serially, scrape each, cache to Redis,
+    and flush the cache to the Bizly API every BATCH_SIZE successful scrapes.
+    On per-URL failure, push to the DLQ and continue to the next URL.
+    """
+    start_len = queue_len()
+    logger.info("PHASE2_START queue_len=%d", start_len)
 
-    # --- Flush remaining venues ---
-    if results:
-        _dispatch(results.copy())
-        results = []
+    scraped = 0
+    flushed = 0
 
-    # --- Wait for all background inserts to finish ---
-    for t in threads:
-        t.join()
+    while True:
+        job = pop_url()
+        if job is None:
+            break
 
-    logger.info(f"Done. {len(threads)} batch(es) sent to API.")
+        link = job.get("link")
+        country = job.get("country")
+        city = job.get("city")
+        trace_id = job.get("trace_id") or _short_trace()
+        dest_label = f"{city},{country}"
+
+        with log_context(trace_id=trace_id, dest=dest_label):
+            logger.info("URL_START link=%s", link)
+            try:
+                details = scraper.scrape_venue_details(link, country, city)
+            except Exception as e:
+                logger.exception("URL_FAIL_DLQ link=%s error=%s", link, e)
+                push_dlq_url(link, country, city, trace_id, str(e))
+                continue
+
+            cache_push_result(details)
+            scraped += 1
+            logger.info("URL_SUCCESS link=%s", link)
+
+            flushed += cache_flush_if_ready(BATCH_SIZE)
+
+    flushed += cache_final_drain()
+
+    counts = dlq_counts()
+    logger.info(
+        "PHASE2_END scraped=%d flushed=%d dlq_urls=%d",
+        scraped,
+        flushed,
+        counts["dlq_urls"],
+    )
+    return scraped
+
+
+def run() -> None:
+    scraper = CventScraper()
+    run_phase1(scraper)
+    run_phase2(scraper)
+
+    counts = dlq_counts()
+    logger.info(
+        "RUN_SUMMARY queue_len=%d dlq_destinations=%d dlq_urls=%d",
+        queue_len(),
+        counts["dlq_destinations"],
+        counts["dlq_urls"],
+    )
 
 
 if __name__ == "__main__":

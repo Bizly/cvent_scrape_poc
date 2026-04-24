@@ -83,18 +83,85 @@ def rename_property_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
     Returns the same payload reference for convenience.
     """
 
+    # Cvent guest/meeting metrics use human labels slugified to keys; variants differ by property.
     field_mapping = {
         "single_1_beds": "single_1_bed_rooms",
+        "singles_1_bed": "single_1_bed_rooms",
+        "single_1_bed": "single_1_bed_rooms",
         "double_2_beds": "double_2_beds_rooms",
+        "doubles_2_beds": "double_2_beds_rooms",
+        "doubles_2_bed": "double_2_beds_rooms",
+        "double_2_bed": "double_2_beds_rooms",
         "suites": "suite_rooms",
+        "suite": "suite_rooms",
         "meeting_rooms": "meeting_room_count",
+        "total_meeting_rooms": "meeting_room_count",
+        "number_of_meeting_rooms": "meeting_room_count",
         "largest_room": "largest_meeting_room",
         "second_largest_room": "second_largest_meeting_room",
+        "number_of_guest_rooms": "total_guest_rooms",
+        "guest_rooms": "total_guest_rooms",
     }
 
     for old_key, new_key in field_mapping.items():
         if old_key in payload:
             payload[new_key] = payload.pop(old_key)
+
+    return payload
+
+
+def _nonempty_str(val: Any) -> bool:
+    return isinstance(val, str) and bool(val.strip())
+
+
+def ensure_required_venue_schema_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    After rename_property_fields, fill VenueDetailsSchema-required keys that Cvent
+    sometimes omits or exposes under different metric labels. Values are strings
+    where sanitize_data_types expects numeric strings for int fields.
+    """
+    # --- square_footage (str): prefer totals, then any sq-ft style line ---
+    sq = payload.get("square_footage")
+    if not _nonempty_str(sq):
+        for k in (
+            "total_square_footage",
+            "total_meeting_space",
+            "total_event_space",
+            "meeting_space_sq_ft",
+            "meeting_space",
+            "net_assignable_square_feet",
+            "gross_meeting_space",
+            "total_function_space",
+        ):
+            v = payload.get(k)
+            if v is not None and str(v).strip():
+                payload["square_footage"] = str(v).strip()
+                break
+
+    if not _nonempty_str(payload.get("square_footage")):
+        for k in ("largest_meeting_room", "second_largest_meeting_room", "exhibit_space"):
+            v = payload.get(k)
+            if v is not None and str(v).strip():
+                payload["square_footage"] = str(v).strip()
+                break
+
+    if not _nonempty_str(payload.get("square_footage")):
+        payload["square_footage"] = "0 sq. ft."
+
+    # --- int-like required fields: default "0" so sanitize_data_types can coerce ---
+    intish_required = (
+        "total_guest_rooms",
+        "single_1_bed_rooms",
+        "double_2_beds_rooms",
+        "suite_rooms",
+        "meeting_room_count",
+        "max_capacity",
+        "travelstar_rating",
+    )
+    for key in intish_required:
+        val = payload.get(key)
+        if val is None or val == "" or (isinstance(val, str) and not val.strip()):
+            payload[key] = "0"
 
     return payload
 

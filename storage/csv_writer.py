@@ -36,4 +36,4 @@ def save_data_to_csv(data: list[dict], filename: str = "cvent_venue_details.csv"
         df.to_csv(filename, index=False, encoding='utf-8')
         logger.info(f"Data successfully saved to {filename}")
     except Exception as e:
-        logger.error(f"Error saving data to CSV: {e}")
+        logger.exception(f"Error saving data to CSV: {e}")
