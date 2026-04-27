@@ -15,6 +15,8 @@ from services.queues import (
     cache_final_drain,
     queue_len,
     dlq_counts,
+    is_destination_processed,
+    mark_destination_processed,
 )
 from config import DEBUG_MODE, DEBUG_LIMIT, INPUT_CSV, BATCH_SIZE
 
@@ -49,27 +51,39 @@ def run_phase1(scraper: CventScraper) -> int:
         dest_label = f"{city},{country}"
 
         with log_context(trace_id=trace_id, dest=dest_label):
+            if is_destination_processed(country, city):
+                logger.info("DEST_SKIP (already processed)")
+                continue
+
             logger.info("DEST_START")
             try:
                 links = scraper.scrape_venue_links(country, city)
+                mark_destination_processed(country, city)
             except Exception as e:
                 logger.exception("DEST_FAIL_DLQ error=%s", e)
                 push_dlq_destination(country, city, trace_id, str(e))
                 continue
 
             new_count = 0
+            skipped_redis = 0
             for link in links:
                 if link in seen:
                     continue
                 seen.add(link)
-                enqueue_url(link, country, city, trace_id)
-                enqueued += 1
-                new_count += 1
+                pushed = enqueue_url(link, country, city, trace_id)
+                if pushed:
+                    enqueued += 1
+                    new_count += 1
+                else:
+                    skipped_redis += 1
 
                 if DEBUG_MODE and enqueued >= DEBUG_LIMIT:
                     break
 
-            logger.info("DEST_SUCCESS urls=%d new=%d", len(links), new_count)
+            logger.info(
+                "DEST_SUCCESS urls=%d new=%d skipped_redis_dup=%d",
+                len(links), new_count, skipped_redis,
+            )
 
         if DEBUG_MODE and enqueued >= DEBUG_LIMIT:
             logger.info("PHASE1_DEBUG_CAP reached=%d limit=%d", enqueued, DEBUG_LIMIT)
@@ -137,7 +151,16 @@ def run_phase2(scraper: CventScraper) -> int:
 
 def run() -> None:
     scraper = CventScraper()
+
+    # 1. Resume Phase 2 immediately if there is pending work in Redis
+    if queue_len() > 0:
+        logger.info("RESUME_PHASE2 pending_jobs=%d", queue_len())
+        run_phase2(scraper)
+
+    # 2. Run discovery for new destinations (skips already processed ones)
     run_phase1(scraper)
+
+    # 3. Drain any newly discovered links
     run_phase2(scraper)
 
     counts = dlq_counts()

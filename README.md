@@ -63,6 +63,7 @@ flowchart TD
 | Key | Type | Role |
 |---|---|---|
 | `cvent:queue:urls` | LIST | Phase 1 RPUSH, Phase 2 LPOP (FIFO work queue) |
+| `cvent:seen:urls` | SET  | Dedup guard — Phase 1 SADD before each RPUSH; prevents duplicate jobs on restart |
 | `cvent:dlq:destinations` | LIST | Destination-level failures from Phase 1 |
 | `cvent:dlq:urls` | LIST | URL-level scrape failures from Phase 2 |
 | `cvent:cache:results` | LIST | Scraped venues awaiting batch flush to Bizly |
