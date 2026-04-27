@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 # Redis key layout
 QUEUE_DESTINATIONS = "cvent:queue:destinations"
 QUEUE_URLS = "cvent:queue:urls"
+SEEN_URLS = "cvent:seen:urls"             # SET — dedup guard for the work queue
+SEEN_DESTINATIONS = "cvent:seen:destinations"  # SET — destinations successfully explored
 DLQ_DESTINATIONS = "cvent:dlq:destinations"
 DLQ_URLS = "cvent:dlq:urls"
 CACHE_RESULTS = "cvent:cache:results"
@@ -93,8 +95,23 @@ def clear_seen_urls() -> None:
 # URL queue
 # ---------------------------------------------------------------------------
 
-def enqueue_url(link: str, country: Optional[str], city: Optional[str], trace_id: str) -> None:
-    """RPUSH a venue URL job onto the Phase 2 work queue."""
+def enqueue_url(link: str, country: Optional[str], city: Optional[str], trace_id: str) -> bool:
+    """
+    RPUSH a venue URL job onto the Phase 2 work queue, but only if the URL
+    has not been enqueued before (checked via the SEEN_URLS SET).
+
+    Uses SADD for an atomic O(1) membership test-and-mark:
+      - SADD returns 1  → new URL: also push the job onto QUEUE_URLS.
+      - SADD returns 0  → already seen: skip silently.
+
+    Returns True if the URL was newly enqueued, False if it was a duplicate.
+    """
+    r = get_redis()
+    added = r.sadd(SEEN_URLS, link)   # 1 = new member, 0 = already present
+    if not added:
+        logger.debug("SKIP_DUPLICATE link=%s", link)
+        return False
+
     payload = {
         "link": link,
         "country": country,
@@ -102,7 +119,8 @@ def enqueue_url(link: str, country: Optional[str], city: Optional[str], trace_id
         "trace_id": trace_id,
         "enqueued_at": _utcnow_iso(),
     }
-    get_redis().rpush(QUEUE_URLS, json.dumps(payload))
+    r.rpush(QUEUE_URLS, json.dumps(payload))
+    return True
 
 
 def pop_url() -> Optional[dict]:
@@ -122,6 +140,22 @@ def pop_url() -> Optional[dict]:
 
 def queue_len() -> int:
     return get_redis().llen(QUEUE_URLS)
+
+
+# ---------------------------------------------------------------------------
+# Destination tracking (Phase 1)
+# ---------------------------------------------------------------------------
+
+def is_destination_processed(country: str, city: str) -> bool:
+    """Check if we have already finished link discovery for this city."""
+    key = f"{city}:{country}".lower()
+    return bool(get_redis().sismember(SEEN_DESTINATIONS, key))
+
+
+def mark_destination_processed(country: str, city: str) -> None:
+    """Mark a city as successfully explored so we skip it on restart."""
+    key = f"{city}:{country}".lower()
+    get_redis().sadd(SEEN_DESTINATIONS, key)
 
 
 # ---------------------------------------------------------------------------

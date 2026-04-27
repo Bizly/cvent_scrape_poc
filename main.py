@@ -20,6 +20,8 @@ from services.queues import (
     cache_final_drain,
     queue_len,
     dlq_counts,
+    is_destination_processed,
+    mark_destination_processed,
 )
 from config import DEBUG_MODE, DEBUG_LIMIT, INPUT_CSV, BATCH_SIZE
 
@@ -86,9 +88,14 @@ def run_phase1(scraper: CventScraper) -> int:
         dest_label = f"{city},{country}"
 
         with log_context(trace_id=trace_id, dest=dest_label):
+            if is_destination_processed(country, city):
+                logger.info("DEST_SKIP (already processed)")
+                continue
+
             logger.info("DEST_START")
             try:
                 links = scraper.scrape_venue_links(country, city)
+                mark_destination_processed(country, city)
             except Exception as e:
                 logger.exception("DEST_FAIL_DLQ error=%s", e)
                 push_dlq_destination(country, city, trace_id, str(e))
@@ -96,6 +103,7 @@ def run_phase1(scraper: CventScraper) -> int:
                 continue
 
             new_count = 0
+            skipped_redis = 0
             for link in links:
                 if enqueue_url_if_unseen(link, country, city, trace_id):
                     enqueued += 1
@@ -206,6 +214,8 @@ def run() -> None:
 
     run_phase0()
     run_phase1(scraper)
+
+    # 3. Drain any newly discovered links
     run_phase2(scraper)
 
     counts = dlq_counts()
