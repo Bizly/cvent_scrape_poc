@@ -10,10 +10,12 @@ from storage.bizly_api.insert_batch_venues import insert_venue_batch
 logger = logging.getLogger(__name__)
 
 # Redis key layout
+QUEUE_DESTINATIONS = "cvent:queue:destinations"
 QUEUE_URLS = "cvent:queue:urls"
 DLQ_DESTINATIONS = "cvent:dlq:destinations"
 DLQ_URLS = "cvent:dlq:urls"
 CACHE_RESULTS = "cvent:cache:results"
+SEEN_URLS = "cvent:seen:urls"
 
 
 def _utcnow_iso() -> str:
@@ -24,6 +26,67 @@ def _json_default(obj: Any):
     if isinstance(obj, Decimal):
         return float(obj)
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
+# ---------------------------------------------------------------------------
+# Destination queue
+# ---------------------------------------------------------------------------
+
+def enqueue_destination(country: Optional[str], city: str, trace_id: str) -> None:
+    """RPUSH a destination job onto the Phase 1 work queue."""
+    payload = {
+        "country": country,
+        "city": city,
+        "trace_id": trace_id,
+        "enqueued_at": _utcnow_iso(),
+    }
+    get_redis().rpush(QUEUE_DESTINATIONS, json.dumps(payload))
+
+
+def peek_destination() -> Optional[dict]:
+    """
+    LINDEX 0 — look at the head without removing it.
+    Returns None when the queue is empty.
+    On corrupt payload, drops the entry (LPOP) and returns None.
+    """
+    raw = get_redis().lindex(QUEUE_DESTINATIONS, 0)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.exception("Failed to decode destination payload; dropping: %r", raw)
+        get_redis().lpop(QUEUE_DESTINATIONS)
+        return None
+
+
+def ack_destination() -> None:
+    """LPOP the head destination after its link discovery is complete."""
+    get_redis().lpop(QUEUE_DESTINATIONS)
+
+
+def destination_queue_len() -> int:
+    return get_redis().llen(QUEUE_DESTINATIONS)
+
+
+# ---------------------------------------------------------------------------
+# Seen-URL deduplication (persisted in Redis so restarts don't re-enqueue)
+# ---------------------------------------------------------------------------
+
+def enqueue_url_if_unseen(link: str, country: Optional[str], city: Optional[str], trace_id: str) -> bool:
+    """
+    Atomically add *link* to the SEEN_URLS set. If it was new (SADD returned 1),
+    also RPUSH it onto QUEUE_URLS and return True; otherwise return False.
+    """
+    if get_redis().sadd(SEEN_URLS, link) == 0:
+        return False
+    enqueue_url(link, country, city, trace_id)
+    return True
+
+
+def clear_seen_urls() -> None:
+    """Delete the seen-URL set so a fresh run can re-discover all venues."""
+    get_redis().delete(SEEN_URLS)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +156,8 @@ def dlq_counts() -> dict:
     return {
         "dlq_destinations": r.llen(DLQ_DESTINATIONS),
         "dlq_urls": r.llen(DLQ_URLS),
+        "queue_destinations": r.llen(QUEUE_DESTINATIONS),
+        "queue_urls": r.llen(QUEUE_URLS),
     }
 
 
