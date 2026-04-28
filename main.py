@@ -186,26 +186,25 @@ def run() -> None:
     scraper = CventScraper()
 
     # ------------------------------------------------------------------ #
-    # Resume: if the scraper went down mid-run, finish outstanding work   #
-    # before touching the CSV again.                                      #
+    # Resume: finish outstanding work before touching the CSV again.      #
+    #  1. Unfinished link discovery (dest queue) — may produce new URLs   #
+    #  2. Unfinished venue scraping (URL queue, including any just above) #
     # ------------------------------------------------------------------ #
 
-    url_backlog = queue_len()
     dest_backlog = destination_queue_len()
-
-    if url_backlog > 0:
-        logger.info(
-            "RESUME url_backlog=%d — draining venue URL queue before fresh run",
-            url_backlog,
-        )
-        run_phase2(scraper)
-
     if dest_backlog > 0:
         logger.info(
             "RESUME dest_backlog=%d — finishing link discovery before fresh run",
             dest_backlog,
         )
         run_phase1(scraper)
+
+    url_backlog = queue_len()
+    if url_backlog > 0:
+        logger.info(
+            "RESUME url_backlog=%d — draining venue URL queue before fresh run",
+            url_backlog,
+        )
         run_phase2(scraper)
 
     # ------------------------------------------------------------------ #
@@ -214,8 +213,6 @@ def run() -> None:
 
     run_phase0()
     run_phase1(scraper)
-
-    # 3. Drain any newly discovered links
     run_phase2(scraper)
 
     counts = dlq_counts()

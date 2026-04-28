@@ -6,6 +6,8 @@ services:
       - "6380:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - cvent_net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -25,6 +27,8 @@ services:
     volumes:
       - ./data:/app/data:ro
       - ./output:/app/output
+    networks:
+      - cvent_net
 
   dozzle:
     image: amir20/dozzle:latest
@@ -33,8 +37,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "8080:8080"
+    networks:
+      - cvent_net
     environment:
       DOZZLE_LEVEL: info
+
+networks:
+  cvent_net:
+    driver: bridge
 
 volumes:
   redis_data:
