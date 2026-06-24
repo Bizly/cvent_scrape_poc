@@ -1,0 +1,50 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - cvent_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  scraper:
+    build: .
+    restart: "no"
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./data:/app/data:ro
+      - ./output:/app/output
+    networks:
+      - cvent_net
+
+  dozzle:
+    image: amir20/dozzle:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - cvent_net
+    environment:
+      DOZZLE_LEVEL: info
+
+networks:
+  cvent_net:
+    driver: bridge
+
+volumes:
+  redis_data:
